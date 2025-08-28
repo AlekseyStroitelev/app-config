@@ -10,7 +10,7 @@ env:
   DOCKER_REPO: makaron7321/nginx-test-app
   NAMESPACE: monitoring
   CONTAINER_PORT: 80
-  K8S_MASTER: 130.193.39.63
+  K8S_MASTER: 158.160.109.48
 
 jobs:
   build-and-push:
