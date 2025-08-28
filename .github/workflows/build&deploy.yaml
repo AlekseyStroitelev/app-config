@@ -10,12 +10,11 @@ env:
   DOCKER_REPO: makaron7321/nginx-test-app
   NAMESPACE: monitoring
   CONTAINER_PORT: 80
+  K8S_MASTER: 130.193.39.63
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    outputs:
-      image_tag: ${{ steps.set_tag.outputs.image_tag }}
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -57,11 +56,6 @@ jobs:
           echo "Pushed: $tag"
         done
 
-    - name: Output image info
-      run: |
-        echo "Image tags: $TAGS"
-        echo "Primary tag: ${{ steps.set_tag.outputs.image_tag }}"
-
   deploy-to-k8s:
     needs: build-and-push
     if: startsWith(github.ref, 'refs/tags/v')
@@ -76,19 +70,40 @@ jobs:
         sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
         kubectl version --client
 
-    - name: Configure Kubernetes access
+    - name: Configure Kubernetes access from kubeconfig
       run: |
         mkdir -p ~/.kube
         echo '${{ secrets.KUBECONFIG }}' > ~/.kube/config
         chmod 600 ~/.kube/config
-        kubectl config set-cluster default --server=https://89.169.159.219:6443 --insecure-skip-tls-verify=true
+        
+        # Обновляем server address в конфиге на правильный IP
+        kubectl config set-cluster default --server=https://${{ env.K8S_MASTER }}:6443 --insecure-skip-tls-verify=true
+        
+        # Проверяем конфигурацию
+        echo "=== Current context ==="
+        kubectl config current-context
+        echo "=== Available contexts ==="
+        kubectl config get-contexts
+        echo "=== Cluster info ==="
         kubectl cluster-info
+
+    - name: Test Kubernetes connection
+      run: |
+        echo "Testing connection to Kubernetes cluster..."
+        if kubectl get nodes --request-timeout=10s; then
+          echo "✅ Connection successful!"
+        else
+          echo "❌ Connection failed"
+          exit 1
+        fi
 
     - name: Extract tag version
       run: echo "TAG_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
 
     - name: Deploy to Kubernetes
       run: |
+        echo "Starting deployment of version: ${{ env.TAG_VERSION }}"
+        
         # Create namespace if not exists
         kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
         
@@ -124,18 +139,6 @@ jobs:
                 ports:
                 - containerPort: ${{ env.CONTAINER_PORT }}
                 imagePullPolicy: Always
-                livenessProbe:
-                  httpGet:
-                    path: /
-                    port: ${{ env.CONTAINER_PORT }}
-                  initialDelaySeconds: 5
-                  periodSeconds: 10
-                readinessProbe:
-                  httpGet:
-                    path: /
-                    port: ${{ env.CONTAINER_PORT }}
-                  initialDelaySeconds: 2
-                  periodSeconds: 5
         EOF
 
         # Create or update service
@@ -157,12 +160,17 @@ jobs:
 
     - name: Verify deployment
       run: |
-        echo "Deploying version: ${{ env.TAG_VERSION }}"
-        echo "=== Deployments ==="
-        kubectl get deployments -n ${{ env.NAMESPACE }} -o wide
-        echo "=== Pods ==="
-        kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ env.APP_NAME }}
-        echo "=== Services ==="
-        kubectl get services -n ${{ env.NAMESPACE }}
         echo "=== Deployment status ==="
         kubectl rollout status deployment/${{ env.APP_NAME }} -n ${{ env.NAMESPACE }} --timeout=120s
+        
+        echo "=== Final state ==="
+        echo "Nodes:"
+        kubectl get nodes
+        echo "Deployments:"
+        kubectl get deployments -n ${{ env.NAMESPACE }} -o wide
+        echo "Pods:"
+        kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ env.APP_NAME }}
+        echo "Services:"
+        kubectl get services -n ${{ env.NAMESPACE }}
+        
+        echo "✅ Deployment completed successfully!"
